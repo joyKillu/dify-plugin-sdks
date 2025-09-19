@@ -27,6 +27,7 @@ from dify_plugin.entities.model.llm import (
     LLMResult,
     LLMResultChunk,
     LLMResultChunkDelta,
+    LLMSearchInfo,
 )
 from dify_plugin.entities.model.message import (
     AssistantPromptMessage,
@@ -286,8 +287,8 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                     label=I18nObject(en_US="Temperature", zh_Hans="温度"),
                     help=I18nObject(
                         en_US="Kernel sampling threshold. Used to determine the randomness of the results."
-                        "The higher the value, the stronger the randomness."
-                        "The higher the possibility of getting different answers to the same question.",
+                              "The higher the value, the stronger the randomness."
+                              "The higher the possibility of getting different answers to the same question.",
                         zh_Hans="核采样阈值。用于决定结果随机性，取值越高随机性越强即相同的问题得到的不同答案的可能性越高。",
                     ),
                     type=ParameterType.FLOAT,
@@ -301,8 +302,8 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                     label=I18nObject(en_US="Top P", zh_Hans="Top P"),
                     help=I18nObject(
                         en_US="The probability threshold of the nucleus sampling method during the generation process."
-                        "The larger the value is, the higher the randomness of generation will be."
-                        "The smaller the value is, the higher the certainty of generation will be.",
+                              "The larger the value is, the higher the randomness of generation will be."
+                              "The smaller the value is, the higher the certainty of generation will be.",
                         zh_Hans="生成过程中核采样方法概率阈值。取值越大，生成的随机性越高；取值越小，生成的确定性越高。",
                     ),
                     type=ParameterType.FLOAT,
@@ -316,7 +317,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                     label=I18nObject(en_US="Frequency Penalty", zh_Hans="频率惩罚"),
                     help=I18nObject(
                         en_US="For controlling the repetition rate of words used by the model."
-                        "Increasing this can reduce the repetition of the same words in the model's output.",
+                              "Increasing this can reduce the repetition of the same words in the model's output.",
                         zh_Hans="用于控制模型已使用字词的重复率。 提高此项可以降低模型在输出中重复相同字词的重复度。",
                     ),
                     type=ParameterType.FLOAT,
@@ -329,7 +330,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                     label=I18nObject(en_US="Presence Penalty", zh_Hans="存在惩罚"),
                     help=I18nObject(
                         en_US="Used to control the repetition rate when generating models."
-                        "Increasing this can reduce the repetition rate of model generation.",
+                              "Increasing this can reduce the repetition rate of model generation.",
                         zh_Hans="用于控制模型生成时的重复度。提高此项可以降低模型生成的重复度。",
                     ),
                     type=ParameterType.FLOAT,
@@ -468,6 +469,26 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         if user:
             data["user"] = user
 
+        # 特性处理一些模型专用参数
+        # 混元模型参数特殊转换
+        if "web_search_options.citation" in data or "web_search_options.search_info" in data or "web_search_options.enable_deep_search" in data:
+            data["web_search_options"] = {}
+            if "web_search_options.citation" in data:
+                data["web_search_options"]["citation"] = data["web_search_options.citation"]
+                del data["web_search_options.citation"]
+            if "web_search_options.search_info" in data:
+                data["web_search_options"]["search_info"] = data["web_search_options.search_info"]
+                del data["web_search_options.search_info"]
+            if "web_search_options.enable_deep_search" in data:
+                data["web_search_options"]["enable_deep_search"] = data["web_search_options.enable_deep_search"]
+                del data["web_search_options.enable_deep_search"]
+        # GLM模型参数特殊转换
+        if "chat_template_kwargs.enable_thinking" in data:
+            data["chat_template_kwargs"] = {}
+            data["chat_template_kwargs"]["enable_thinking"] = data["chat_template_kwargs.enable_thinking"]
+            del data["chat_template_kwargs.enable_thinking"]
+        logger.info(f"web_search_options: {data}")
+
         response = requests.post(endpoint_url, headers=headers, json=data, timeout=(10, 300), stream=stream)
 
         if response.encoding is None or response.encoding == "ISO-8859-1":
@@ -491,6 +512,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         prompt_messages: list[PromptMessage],
         credentials: dict,
         full_content: str,
+        search_info: LLMSearchInfo,
     ) -> LLMResultChunk:
         # calculate num tokens
         prompt_tokens = usage and usage.get("prompt_tokens")
@@ -505,7 +527,8 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
 
         return LLMResultChunk(
             model=model,
-            delta=LLMResultChunkDelta(index=index, message=message, finish_reason=finish_reason, usage=usage),
+            delta=LLMResultChunkDelta(index=index, message=message, finish_reason=finish_reason, usage=usage,
+                                      search_info=search_info),
         )
 
     def _handle_generate_stream_response(
@@ -525,6 +548,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
         tools_calls: list[AssistantPromptMessage.ToolCall] = []
         finish_reason = None
         usage = None
+        search_info = None
         is_reasoning_started = False
         # delimiter for stream response, need unicode_escape
         delimiter = credentials.get("stream_mode_delimiter", "\n\n")
@@ -563,6 +587,10 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                         usage = u
                 if not chunk_json or len(chunk_json["choices"]) == 0:
                     continue
+
+                if "search_info" in chunk_json and "search_results" in chunk_json["search_info"] and len(
+                    chunk_json["search_info"]["search_results"]) > 0:
+                    search_info = chunk_json["search_info"]
 
                 choice = chunk_json["choices"][0]
                 finish_reason = chunk_json["choices"][0].get("finish_reason")
@@ -616,6 +644,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                     delta=LLMResultChunkDelta(
                         index=chunk_index,
                         message=assistant_prompt_message,
+                        search_info=search_info or {}
                     ),
                 )
 
@@ -627,6 +656,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
                 delta=LLMResultChunkDelta(
                     index=chunk_index,
                     message=AssistantPromptMessage(tool_calls=tools_calls, content=""),
+                    search_info=search_info or {}
                 ),
             )
 
@@ -639,6 +669,7 @@ class OAICompatLargeLanguageModel(_CommonOaiApiCompat, LargeLanguageModel):
             credentials=credentials,
             prompt_messages=prompt_messages,
             full_content=full_assistant_content,
+            search_info=search_info or {}
         )
 
     def _handle_generate_response(

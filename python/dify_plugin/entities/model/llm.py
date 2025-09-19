@@ -69,6 +69,27 @@ class LLMUsage(ModelUsage):
         )
 
 
+class SearchResultItem(BaseModel):
+    """
+    搜索结果项
+    """
+    index: int
+    title: str
+    url: str
+    publisher: str = ""
+    source: str
+    extra: str
+
+
+class LLMSearchInfo(BaseModel):
+    """
+    搜索相关信息
+    """
+    support_deep_search: bool = False  # 默认不支持深度搜索
+    search_results: list[SearchResultItem] = Field(default_factory=list)  # 默认为空列表
+    mindmap: dict = Field(default_factory=dict)  # 默认为空字典
+
+
 class LLMResultChunkDelta(BaseModel):
     """
     Model class for llm result chunk delta.
@@ -78,6 +99,7 @@ class LLMResultChunkDelta(BaseModel):
     message: AssistantPromptMessage
     usage: LLMUsage | None = None
     finish_reason: str | None = None
+    search_info: LLMSearchInfo | None = None
 
 
 class LLMResultChunk(BaseModel):
@@ -157,6 +179,7 @@ class LLMResult(BaseModel):
                 message=self.message,
                 usage=self.usage,
                 finish_reason=None,
+                search_info=None,
             ),
         )
 
